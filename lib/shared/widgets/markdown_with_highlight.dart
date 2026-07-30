@@ -214,6 +214,7 @@ class _MarkdownWithCodeHighlightState extends State<MarkdownWithCodeHighlight> {
     components.insert(0, ModernBlockQuote());
     components.insert(0, FencedCodeBlockMd(streaming: widget.streaming));
     components.insert(0, DetailsHtmlMd());
+    components.insert(0, StyledDivBlockMd());
     // Inline components: keep defaults but make link parsing line-scoped
     final inlineComponents = List<MarkdownComponent>.from(
       MarkdownComponent.inlineComponents,
@@ -759,6 +760,116 @@ String? _normalizeLanguage(String? lang) {
   }
 }
 
+/// Convert inline HTML formatting tags to Markdown equivalents.
+/// Called inside _preprocessFences while code blocks are masked.
+String _convertInlineHtmlFormatting(String input) {
+  var out = input;
+  // Bold / Strong
+  out = out.replaceAllMapped(
+    RegExp(r'<(?:strong|b)\s*>([\s\S]*?)</(?:strong|b)\s*>',
+        caseSensitive: false, dotAll: true),
+    (m) => '**${m.group(1)}**',
+  );
+  // Italic / Emphasis
+  out = out.replaceAllMapped(
+    RegExp(r'<(?:em|i)\s*>([\s\S]*?)</(?:em|i)\s*>',
+        caseSensitive: false, dotAll: true),
+    (m) => '*${m.group(1)}*',
+  );
+  // Strikethrough
+  out = out.replaceAllMapped(
+    RegExp(r'<(?:s|del|strike)\s*>([\s\S]*?)</(?:s|del|strike)\s*>',
+        caseSensitive: false, dotAll: true),
+    (m) => '~~${m.group(1)}~~',
+  );
+  // Inline code
+  out = out.replaceAllMapped(
+    RegExp(r'<code\s*>([\s\S]*?)</code\s*>',
+        caseSensitive: false, dotAll: true),
+    (m) => '`${m.group(1)}`',
+  );
+  // <br> -> newline
+  out = out.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+  return out;
+}
+
+/// Convert HTML <table> blocks to Markdown table format.
+/// Only converts complete tables (with closing </table> tag) to stay
+/// streaming-safe; partial blocks are left unchanged.
+String _convertHtmlTablesToMarkdown(String input) {
+  final tableRe = RegExp(
+    r'<table\b[^>]*>([\s\S]*?)</table\s*>',
+    caseSensitive: false, dotAll: true,
+  );
+
+  return input.replaceAllMapped(tableRe, (match) {
+    final fullTable = match.group(1) ?? '';
+    if (fullTable.trim().isEmpty) return '';
+
+    // Extract rows
+    final rowRe = RegExp(
+      r'<tr\b[^>]*>([\s\S]*?)</tr\s*>',
+      caseSensitive: false, dotAll: true,
+    );
+    final rows = <List<String>>[];
+
+    for (final rowMatch in rowRe.allMatches(fullTable)) {
+      final rowContent = rowMatch.group(1) ?? '';
+      final cellRe = RegExp(
+        r'<(?:th|td)\b[^>]*>([\s\S]*?)</(?:th|td)\s*>',
+        caseSensitive: false, dotAll: true,
+      );
+      final cells = <String>[];
+
+      for (final cellMatch in cellRe.allMatches(rowContent)) {
+        var cellContent = (cellMatch.group(1) ?? '').trim();
+        // Recursively convert inline HTML inside cells
+        cellContent = _convertInlineHtmlFormatting(cellContent);
+        // Strip any remaining HTML tags
+        cellContent = cellContent.replaceAll(RegExp(r'<[^>]+>'), '');
+        // Escape pipe characters
+        cellContent = cellContent.replaceAll('|', r'\|');
+        // Collapse whitespace
+        cellContent = cellContent.replaceAll(RegExp(r'\s+'), ' ').trim();
+        cells.add(cellContent);
+      }
+      if (cells.isNotEmpty) rows.add(cells);
+    }
+
+    if (rows.isEmpty) return '';
+
+    // Determine column count
+    final colCount =
+        rows.fold<int>(0, (max, row) => row.length > max ? row.length : max);
+    if (colCount == 0) return '';
+
+    // Normalize all rows
+    for (var i = 0; i < rows.length; i++) {
+      while (rows[i].length < colCount) {
+        rows[i].add('');
+      }
+    }
+
+    // Build Markdown table
+    final buf = StringBuffer();
+    for (var i = 0; i < rows.length; i++) {
+      final row = rows[i];
+      buf.write('| ');
+      buf.write(row.join(' | '));
+      buf.writeln(' |');
+
+      // Add separator after first row
+      if (i == 0) {
+        buf.write('| ');
+        buf.write(List<String>.filled(colCount, '---').join(' | '));
+        buf.writeln(' |');
+      }
+    }
+
+    return '\n${buf.toString().trim()}\n';
+  });
+}
+
 String _preprocessFences(
   String input, {
   required bool enableMath,
@@ -936,6 +1047,15 @@ String _preprocessFences(
     }
     out = buf.toString();
   }
+
+  // Convert inline HTML formatting tags to Markdown equivalents.
+  // Must run after code blocks are masked so HTML inside code fences is untouched.
+  out = _convertInlineHtmlFormatting(out);
+
+  // Convert HTML tables to Markdown table format.
+  // Only complete tables (with closing </table>) are converted;
+  // partial tables during streaming are left as-is.
+  out = _convertHtmlTablesToMarkdown(out);
 
   // STEP 3: UNMASKING - Restore code blocks
   // Replace all mask placeholders with their original content
@@ -5722,6 +5842,178 @@ class _DetailsHtmlBlockState extends State<_DetailsHtmlBlock> {
         ],
       ),
     );
+  }
+}
+
+/// Renders <div style="..."> blocks as styled Flutter containers.
+/// Only matches complete blocks (with closing </div>) for streaming safety.
+class StyledDivBlockMd extends BlockMd {
+  @override
+  RegExp get exp => RegExp(
+    r'^\ *?(?:' + expString + r')$',
+    dotAll: true,
+    multiLine: true,
+    caseSensitive: false,
+  );
+
+  @override
+  String get expString =>
+      r'<div\s+style\s*=\s*"([^"]*)"\s*>([\s\S]*?)<\/div\s*>';
+
+  // Parse simple CSS key:value pairs from a style string.
+  static Map<String, String> _parseStyle(String style) {
+    final map = <String, String>{};
+    for (final part in style.split(';')) {
+      final colon = part.indexOf(':');
+      if (colon == -1) continue;
+      final key = part.substring(0, colon).trim().toLowerCase();
+      final value = part.substring(colon + 1).trim();
+      if (key.isNotEmpty && value.isNotEmpty) {
+        map[key] = value;
+      }
+    }
+    return map;
+  }
+
+  // Parse a CSS color value (#rgb, #rrggbb, rgb(...)) to a Flutter Color.
+  static Color? _parseColor(String? value) {
+    if (value == null || value.isEmpty) return null;
+    value = value.trim();
+    // #rgb or #rrggbb
+    if (value.startsWith('#')) {
+      var hex = value.substring(1);
+      if (hex.length == 3) {
+        hex = '${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}';
+      }
+      if (hex.length == 6) {
+        final parsed = int.tryParse(hex, radix: 16);
+        if (parsed != null) return Color(0xFF000000 | parsed);
+      }
+    }
+    // rgb(r, g, b)
+    final rgbMatch = RegExp(r'rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)')
+        .firstMatch(value);
+    if (rgbMatch != null) {
+      final r = int.tryParse(rgbMatch.group(1) ?? '') ?? 0;
+      final g = int.tryParse(rgbMatch.group(2) ?? '') ?? 0;
+      final b = int.tryParse(rgbMatch.group(3) ?? '') ?? 0;
+      return Color.fromARGB(255, r.clamp(0, 255), g.clamp(0, 255),
+          b.clamp(0, 255));
+    }
+    return null;
+  }
+
+  // Parse a CSS pixel value (e.g. "14px") to a double.
+  static double? _parsePx(String? value) {
+    if (value == null || value.isEmpty) return null;
+    final match = RegExp(r'^([\d.]+)\s*px').firstMatch(value.trim());
+    if (match != null) return double.tryParse(match.group(1)!);
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context, String text, GptMarkdownConfig config) {
+    final match = RegExp(
+      r'^<div\s+style\s*=\s*"([^"]*)"\s*>([\s\S]*?)<\/div\s*>$',
+      caseSensitive: false,
+      dotAll: true,
+    ).firstMatch(text.trim());
+
+    if (match == null) {
+      return config.getRich(TextSpan(text: text, style: config.style));
+    }
+
+    final styleStr = match.group(1) ?? '';
+    final body = (match.group(2) ?? '').trim();
+    if (body.isEmpty) return const SizedBox.shrink();
+
+    final css = _parseStyle(styleStr);
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Parse visual properties from CSS
+    final borderLeftColor =
+        _parseColor(css['border-left-color']) ?? _parseColor(_extractBorderColor(css['border-left']));
+    final borderLeftWidth =
+        _parsePx(_extractBorderWidth(css['border-left'])) ?? _parsePx(css['border-left-width']);
+    final bgColor = _parseColor(css['background-color']) ??
+        _parseColor(css['background']);
+    final padding = _parsePx(css['padding']);
+    final marginTop = _parsePx(css['margin-top']) ?? _parsePx(css['margin']);
+    final marginBottom =
+        _parsePx(css['margin-bottom']) ?? _parsePx(css['margin']);
+    final fontSz = _parsePx(css['font-size']);
+    final textColor = _parseColor(css['color']);
+    final lineH = double.tryParse(css['line-height'] ?? '');
+
+    // Build Flutter Container styling
+    BoxDecoration? decoration;
+    if (borderLeftColor != null && borderLeftWidth != null) {
+      decoration = BoxDecoration(
+        border: Border(
+          left: BorderSide(color: borderLeftColor, width: borderLeftWidth),
+        ),
+      );
+    }
+
+    final bodyStyle = (config.style ?? TextStyle()).copyWith(
+      color: textColor,
+      fontSize: fontSz,
+      height: lineH,
+    );
+    final bodyConfig = config.copyWith(style: bodyStyle);
+
+    Widget content = config.getRich(
+      TextSpan(
+        style: bodyStyle,
+        children: MarkdownComponent.generate(context, body, bodyConfig, true),
+      ),
+    );
+
+    final container = Container(
+      width: double.infinity,
+      margin: EdgeInsets.only(
+        top: marginTop ?? 4.0,
+        bottom: marginBottom ?? 4.0,
+      ),
+      padding: EdgeInsets.all(padding ?? 12.0),
+      decoration: decoration?.copyWith(
+        color: bgColor ??
+            (isDark
+                ? cs.onSurface.withValues(alpha: 0.04)
+                : cs.onSurface.withValues(alpha: 0.02)),
+        borderRadius: BorderRadius.circular(8),
+      ) ?? BoxDecoration(
+        color: bgColor ??
+            (isDark
+                ? cs.onSurface.withValues(alpha: 0.04)
+                : cs.onSurface.withValues(alpha: 0.02)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: content,
+    );
+
+    return container;
+  }
+
+  // Extract color from a shorthand border-left value like "3px solid #333"
+  static String? _extractBorderColor(String? value) {
+    if (value == null) return null;
+    final parts = value.trim().split(RegExp(r'\s+'));
+    for (final part in parts) {
+      if (part.startsWith('#') || part.startsWith('rgb')) return part;
+    }
+    return null;
+  }
+
+  // Extract width from a shorthand border-left value like "3px solid #333"
+  static String? _extractBorderWidth(String? value) {
+    if (value == null) return null;
+    final parts = value.trim().split(RegExp(r'\s+'));
+    for (final part in parts) {
+      if (part.endsWith('px')) return part;
+    }
+    return null;
   }
 }
 
