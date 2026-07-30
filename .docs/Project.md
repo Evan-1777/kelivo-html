@@ -180,6 +180,7 @@ Kelivo-html/
 - `pubspec.yaml` 中 `enable-swift-package-manager: false`——原因：iOS 插件依赖 CocoaPods 尚未兼容 SPM 依赖图
 - `permission_handler_windows` 通过 `dependency_overrides` 使用本地 fork——原因：上游 Windows 持续位置访问有已知 bug
 - `assets/mermaid.min.js` 用于 Markdown 渲染中的 Mermaid 图——原因：WebView 内执行 JS 渲染
+- CI workflow 的 `FLUTTER_VERSION` 须 >= pubspec 的 `flutter` 下限（当前 `>=3.44.1` / Dart `^3.12.1`）——原因：低于下限会导致 `flutter pub get` 版本解析失败；`build-stable*.yml`、`build-linux-arm64.yml` 已统一至 3.44.8
 
 ## 7. 外部依赖与集成（可选）
 
