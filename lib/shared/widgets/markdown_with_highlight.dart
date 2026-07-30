@@ -762,34 +762,69 @@ String? _normalizeLanguage(String? lang) {
 
 /// Convert inline HTML formatting tags to Markdown equivalents.
 /// Called inside _preprocessFences while code blocks are masked.
-String _convertInlineHtmlFormatting(String input) {
+/// [inlineOnly] restricts conversion to br + b/i/s/code for use inside table cells.
+String _convertInlineHtmlFormatting(String input, {bool inlineOnly = false}) {
   var out = input;
-  // Bold / Strong
+  // <br> -> newline (run first, both modes)
+  out = out.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+  // Bold / Strong — attribute-tolerant (\b prevents false match on <br>)
   out = out.replaceAllMapped(
-    RegExp(r'<(?:strong|b)\s*>([\s\S]*?)</(?:strong|b)\s*>',
+    RegExp(r'<(?:strong|b)\b[^>]*>([\s\S]*?)</(?:strong|b)\s*>',
         caseSensitive: false, dotAll: true),
     (m) => '**${m.group(1)}**',
   );
   // Italic / Emphasis
   out = out.replaceAllMapped(
-    RegExp(r'<(?:em|i)\s*>([\s\S]*?)</(?:em|i)\s*>',
+    RegExp(r'<(?:em|i)\b[^>]*>([\s\S]*?)</(?:em|i)\s*>',
         caseSensitive: false, dotAll: true),
     (m) => '*${m.group(1)}*',
   );
   // Strikethrough
   out = out.replaceAllMapped(
-    RegExp(r'<(?:s|del|strike)\s*>([\s\S]*?)</(?:s|del|strike)\s*>',
+    RegExp(r'<(?:s|del|strike)\b[^>]*>([\s\S]*?)</(?:s|del|strike)\s*>',
         caseSensitive: false, dotAll: true),
     (m) => '~~${m.group(1)}~~',
   );
   // Inline code
   out = out.replaceAllMapped(
-    RegExp(r'<code\s*>([\s\S]*?)</code\s*>',
+    RegExp(r'<code\b[^>]*>([\s\S]*?)</code\s*>',
         caseSensitive: false, dotAll: true),
     (m) => '`${m.group(1)}`',
   );
-  // <br> -> newline
-  out = out.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+  // Block-level conversions — only when not called from table cells
+  if (!inlineOnly) {
+    // Headings: h1-h6 with attributes -> ATX markdown
+    out = out.replaceAllMapped(
+      RegExp(r'(^|\n)[ \t]*<h([1-6])\b[^>]*>([\s\S]*?)</h\2\s*>[ \t]*(?=\n|$)',
+          caseSensitive: false),
+      (m) => '${m.group(1)}\n\n${"#" * int.parse(m.group(2)!)} ${m.group(3)!.trim()}\n\n',
+    );
+    // Unordered/ordered list containers: strip <ul>/<ol> tags, convert <li>
+    out = out.replaceAll(RegExp(r'</?(?:ul|ol)\b[^>]*>', caseSensitive: false), '\n');
+    // ponytail: ol numbering lost (upgraded to bullet); path to fix = per-ol-block counter
+    out = out.replaceAllMapped(
+      RegExp(r'<li\b[^>]*>([\s\S]*?)</li\s*>', caseSensitive: false, dotAll: true),
+      (m) => '\n- ${m.group(1)!.trim()}',
+    );
+    // <hr> -> horizontal rule
+    out = out.replaceAll(RegExp(r'<hr\s*/?>', caseSensitive: false), '\n\n---\n\n');
+    // <blockquote> -> line-prefixed "> "
+    out = out.replaceAllMapped(
+      RegExp(r'<blockquote\b[^>]*>([\s\S]*?)</blockquote\s*>', caseSensitive: false, dotAll: true),
+      (m) {
+        final body = m.group(1) ?? '';
+        final lines = body.split('\n');
+        final quoted = lines.map((l) => '> $l').join('\n');
+        return '\n$quoted\n';
+      },
+    );
+    // Strip span/font/mark/sub/sup/small/center & semantic container tags
+    out = out.replaceAll(
+      RegExp(r'</?(?:span|font|mark|sub|sup|small|center|section|article|header|footer|main|aside|figure|figcaption)\b[^>]*>',
+          caseSensitive: false),
+      '',
+    );
+  }
   return out;
 }
 
@@ -824,7 +859,7 @@ String _convertHtmlTablesToMarkdown(String input) {
       for (final cellMatch in cellRe.allMatches(rowContent)) {
         var cellContent = (cellMatch.group(1) ?? '').trim();
         // Recursively convert inline HTML inside cells
-        cellContent = _convertInlineHtmlFormatting(cellContent);
+        cellContent = _convertInlineHtmlFormatting(cellContent, inlineOnly: true);
         // Strip any remaining HTML tags
         cellContent = cellContent.replaceAll(RegExp(r'<[^>]+>'), '');
         // Escape pipe characters
@@ -5858,7 +5893,22 @@ class StyledDivBlockMd extends BlockMd {
 
   @override
   String get expString =>
-      r'<div\s+style\s*=\s*"([^"]*)"\s*>([\s\S]*?)<\/div\s*>';
+      r'<div\s+style\s*=\s*"[^"]*"\s*>' + _divBody(3) + r'<\/div\s*>';
+
+  // Recursively build a balanced div-body pattern up to [depth] nesting levels.
+  // ponytail: depth 3 covers typical card-in-flex nesting; upgrade to dynamic
+  // depth or full HTML parser if deeper nesting appears in real LLM output.
+  static String _divBody(int depth) {
+    if (depth <= 1) {
+      return r'(?:(?!<div\b|<\/div\s*>)[\s\S])*';
+    }
+    final nested = _divPattern(depth - 1);
+    return r'(?:(?!<div\b|<\/div\s*>)[\s\S]|' + nested + r')*';
+  }
+
+  static String _divPattern(int depth) {
+    return r'<div\b[^>]*>' + _divBody(depth) + r'<\/div\s*>';
+  }
 
   // Parse simple CSS key:value pairs from a style string.
   static Map<String, String> _parseStyle(String style) {
@@ -5914,7 +5964,7 @@ class StyledDivBlockMd extends BlockMd {
   @override
   Widget build(BuildContext context, String text, GptMarkdownConfig config) {
     final match = RegExp(
-      r'^<div\s+style\s*=\s*"([^"]*)"\s*>([\s\S]*?)<\/div\s*>$',
+      r'^<div\s+style\s*=\s*"([^"]*)"\s*>([\s\S]*)<\/div\s*>$',
       caseSensitive: false,
       dotAll: true,
     ).firstMatch(text.trim());
@@ -5946,6 +5996,12 @@ class StyledDivBlockMd extends BlockMd {
     final textColor = _parseColor(css['color']);
     final lineH = double.tryParse(css['line-height'] ?? '');
 
+    // border shorthand / border-width / border-color / border-radius
+    final borderW = _parsePx(css['border-width']) ?? _parsePx(_extractBorderWidth(css['border']));
+    final borderC = _parseColor(css['border-color']) ?? _parseColor(_extractBorderColor(css['border']));
+    final radius = _parsePx(css['border-radius']);
+    final hasVisual = bgColor != null || borderC != null || borderLeftColor != null;
+
     // Build Flutter Container styling
     BoxDecoration? decoration;
     if (borderLeftColor != null && borderLeftWidth != null) {
@@ -5953,6 +6009,10 @@ class StyledDivBlockMd extends BlockMd {
         border: Border(
           left: BorderSide(color: borderLeftColor, width: borderLeftWidth),
         ),
+      );
+    } else if (borderW != null && borderC != null) {
+      decoration = BoxDecoration(
+        border: Border.all(width: borderW, color: borderC),
       );
     }
 
@@ -5978,17 +6038,21 @@ class StyledDivBlockMd extends BlockMd {
       ),
       padding: EdgeInsets.all(padding ?? 12.0),
       decoration: decoration?.copyWith(
-        color: bgColor ??
-            (isDark
-                ? cs.onSurface.withValues(alpha: 0.04)
-                : cs.onSurface.withValues(alpha: 0.02)),
-        borderRadius: BorderRadius.circular(8),
+        color: hasVisual
+            ? (bgColor ??
+                (isDark
+                    ? cs.onSurface.withValues(alpha: 0.04)
+                    : cs.onSurface.withValues(alpha: 0.02)))
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(radius ?? 8),
       ) ?? BoxDecoration(
-        color: bgColor ??
-            (isDark
-                ? cs.onSurface.withValues(alpha: 0.04)
-                : cs.onSurface.withValues(alpha: 0.02)),
-        borderRadius: BorderRadius.circular(8),
+        color: hasVisual
+            ? (bgColor ??
+                (isDark
+                    ? cs.onSurface.withValues(alpha: 0.04)
+                    : cs.onSurface.withValues(alpha: 0.02)))
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(radius ?? 8),
       ),
       child: content,
     );
