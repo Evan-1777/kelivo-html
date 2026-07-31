@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:Kelivo/shared/widgets/html_fragment_view.dart';
 import 'package:Kelivo/shared/widgets/markdown_with_highlight.dart';
@@ -8,6 +9,36 @@ import 'package:Kelivo/core/providers/settings_provider.dart';
 import '../../support/business_test_harness.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('fragment.html bundled asset (regression)', () {
+    test('template is bundled, non-empty, with key placeholders', () async {
+      final template = await rootBundle.loadString('assets/html/fragment.html');
+      expect(template, isNotEmpty);
+      expect(template, contains('{{FRAGMENT_BASE64}}'));
+      expect(template, contains('{{BACKGROUND}}'));
+      expect(template, contains('{{LINE_HEIGHT}}'));
+      expect(template, contains('{{BASE_FONT_SIZE}}'));
+    });
+
+    test('composeFragmentDocument consumes the bundled template fully', () async {
+      final template = await rootBundle.loadString('assets/html/fragment.html');
+      final cs = ThemeData.light().colorScheme;
+      final out = composeFragmentDocument(
+        template: template,
+        fragmentHtml:
+            '<div style="border-top: 3px solid #2c3e50;"><h4>核心优势</h4></div>',
+        cs: cs,
+        fontSize: 15.7,
+        lineHeight: 1.5,
+        bubbleBackground: const Color(0xFFF7F7F7),
+      );
+      // No leftover placeholders means every {{...}} was substituted.
+      expect(out, isNot(contains('{{')));
+      expect(out, contains('id="content"'));
+    });
+  });
+
   group('shouldUseWebViewForHtml', () {
     test('returns true on WebView-capable platforms', () {
       expect(shouldUseWebViewForHtml(TargetPlatform.android), isTrue);

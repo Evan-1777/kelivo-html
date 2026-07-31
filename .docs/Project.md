@@ -183,6 +183,7 @@ Kelivo-html/
 - CI workflow 的 `FLUTTER_VERSION` 须 >= pubspec 的 `flutter` 下限（当前 `>=3.44.1` / Dart `^3.12.1`）——原因：低于下限会导致 `flutter pub get` 版本解析失败；`build-stable*.yml`、`build-linux-arm64.yml` 已统一至 3.44.8
 - `lib/shared/widgets/markdown_with_highlight.dart` 中 `StyledDivBlockMd`（v3 07-31）自研渲染 `<div style>` 块——支持 grid/flex 多列布局（Row+Expanded 分行 / LayoutBuilder 自适应）与方向边框（border-top/right/bottom）；v4 起仅作 Linux/Web 平台的 fallback，不动 gpt_markdown 包
 - `lib/shared/widgets/html_fragment_view.dart` + `assets/html/fragment.html`（v4 08-01）——完整 `<div style>` 块改由 WebView 渲染（片段混合方案）：WebView 引擎解析全部 CSS，与 Markdown 预览一致；JS 高度桥（ResizeObserver + FragmentBridge channel 双路）+ 链接点击桥 → `onLinkTap`；模板零外部依赖离线可用；Linux/Web 无 WebView 平台回退原生 `StyledDivBlockMd`；`webview_flutter` 4.x 的 `WebViewController` 不提供 `dispose()`，控制器生命周期由插件管理
+- ★ 新增/修改 WebView HTML 模板（`assets/html/*.html`）后必须同步声明到 `pubspec.yaml` 的 `flutter.assets` 清单——原因：`rootBundle.loadString('assets/html/fragment.html')` 依赖资源包，声明遗漏会导致移动端异步加载异常，WebView 保持初始高度呈空白卡片（2026-07-31 实机回归）；回归测试见 `test/shared/widgets/html_fragment_view_test.dart` 的 `fragment.html bundled asset` 组
 
 ## 7. 外部依赖与集成（可选）
 
