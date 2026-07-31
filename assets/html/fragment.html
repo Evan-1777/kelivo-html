@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML Fragment</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: {{BACKGROUND}};
+            color: {{ON_SURFACE}};
+            font-size: {{BASE_FONT_SIZE}}px;
+            line-height: {{LINE_HEIGHT}};
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            word-wrap: break-word;
+        }
+        h1, h2, h3, h4, h5, h6 { margin-top: 16px; margin-bottom: 8px; font-weight: 600; line-height: 1.25; }
+        h1 { font-size: 1.7em; }
+        h2 { font-size: 1.5em; border-bottom: 1px solid {{OUTLINE_VARIANT}}; padding-bottom: 6px; }
+        h3 { font-size: 1.25em; }
+        h4 { font-size: 1.05em; }
+        h5 { font-size: 0.9em; }
+        h6 { font-size: 0.85em; color: {{ON_SURFACE_VARIANT}}; }
+        p { margin: 8px 0; }
+        ul, ol { margin: 8px 0; padding-left: 1.6em; }
+        li { margin-bottom: 2px; }
+        code { background: {{OUTLINE_VARIANT}}; border-radius: 3px; font-size: 0.88em; margin: 0; padding: 0.15em 0.4em; font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', monospace; }
+        pre { background: {{OUTLINE_VARIANT}}; border-radius: 6px; font-size: 0.88em; line-height: 1.45; overflow: auto; padding: 10px; margin: 8px 0; }
+        pre code { background: transparent; border: 0; display: inline; line-height: inherit; margin: 0; overflow: visible; padding: 0; }
+        table { border-collapse: collapse; border-spacing: 0; width: 100%; margin: 8px 0; }
+        table th, table td { border: 1px solid {{OUTLINE_VARIANT}}; padding: 5px 10px; }
+        table th { background: {{OUTLINE_VARIANT}}; font-weight: 600; }
+        blockquote { border-left: 3px solid {{OUTLINE_VARIANT}}; color: {{ON_SURFACE_VARIANT}}; margin: 8px 0; padding: 0 12px; }
+        a { color: {{PRIMARY}}; text-decoration: none; }
+        img { max-width: 100%; height: auto; border-radius: 6px; margin: 4px 0; }
+        hr { background: {{OUTLINE_VARIANT}}; border: 0; height: 1px; margin: 12px 0; }
+    </style>
+</head>
+<body>
+    <div id="content"></div>
+
+    <script>
+        (function () {
+            // Decode the base64-encoded HTML fragment (UTF-8 safe for Chinese).
+            try {
+                var b64 = atob('{{FRAGMENT_BASE64}}');
+                var bytes = new Uint8Array(b64.length);
+                for (var i = 0; i < b64.length; i++) { bytes[i] = b64.charCodeAt(i); }
+                var html = new TextDecoder('utf-8').decode(bytes);
+                document.getElementById('content').innerHTML = html;
+            } catch (e) {
+                document.getElementById('content').textContent = 'Fragment decode error: ' + e.message;
+            }
+
+            // Dual-channel postMessage: webview_flutter (FragmentBridge) and
+            // webview_windows (chrome.webview) — same pattern as mark.html.
+            function send(msg) {
+                var payload = JSON.stringify(msg);
+                try { if (window.FragmentBridge) { window.FragmentBridge.postMessage(payload); } } catch (_) {}
+                try { if (window.chrome && window.chrome.webview) { window.chrome.webview.postMessage(payload); } } catch (_) {}
+            }
+
+            // Height reporting: ResizeObserver + load + interval fallback.
+            function report() {
+                var h = document.documentElement.scrollHeight;
+                if (h > 0) { send({ type: 'height', value: h }); }
+            }
+            if (window.ResizeObserver) {
+                try { new ResizeObserver(report).observe(document.body); } catch (_) {}
+            }
+            window.addEventListener('load', report);
+            setInterval(report, 500);
+
+            // Link interception: forward href taps to the Flutter side.
+            document.addEventListener('click', function (e) {
+                var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+                if (a) {
+                    e.preventDefault();
+                    send({ type: 'link', href: a.getAttribute('href') });
+                }
+            }, true);
+        })();
+    </script>
+</body>
+</html>

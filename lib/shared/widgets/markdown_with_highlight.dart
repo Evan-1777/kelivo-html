@@ -9,6 +9,7 @@ import 'package:flutter_highlight/themes/atom-one-dark-reasonable.dart';
 import 'package:flutter/rendering.dart';
 import 'package:highlight/highlight.dart' show Node, highlight;
 import '../../icons/lucide_adapter.dart';
+import 'html_fragment_view.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 import 'dart:io';
@@ -6148,6 +6149,20 @@ class StyledDivBlockMd extends BlockMd {
     final styleStr = match.group(1) ?? '';
     final body = (match.group(2) ?? '').trim();
     if (body.isEmpty) return const SizedBox.shrink();
+
+    // v4 (08-01): render HTML fragments via WebView on supported platforms
+    // (full CSS engine, matches Markdown Preview). Linux/web fall back to the
+    // native renderer below (StyledDivBlockMd kept as the fallback path).
+    if (shouldUseWebViewForHtml(defaultTargetPlatform)) {
+      final base = config.style ?? const TextStyle();
+      final onLink = config.onLinkTap;
+      return HtmlFragmentView(
+        fragmentHtml: text,
+        fontSize: base.fontSize ?? 15.7,
+        lineHeight: base.height ?? 1.5,
+        onLinkTap: onLink == null ? null : (url) => onLink(url, ''),
+      );
+    }
 
     final css = _parseStyle(styleStr);
     final display = css['display'] ?? '';

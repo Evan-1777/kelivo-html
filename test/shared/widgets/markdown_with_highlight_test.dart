@@ -3550,6 +3550,11 @@ void main() {
   testWidgets('StyledDivBlockMd renders grid two-column layout', (
     tester,
   ) async {
+    // Linux override: renderer must stay on the native fallback path in
+    // tests (no WebView platform available); the grid Row layout assertions
+    // below verify that fallback still works.
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     await tester.pumpWidget(_markdownHarness(_gridBlock, width: 800));
     await tester.pump();
 
@@ -3602,6 +3607,8 @@ void main() {
   testWidgets('StyledDivBlockMd renders flex three-card layout narrow', (
     tester,
   ) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+    addTearDown(() => debugDefaultTargetPlatformOverride = null);
     await tester.pumpWidget(_markdownHarness(_flexBlockNarrow, width: 360));
     await tester.pump();
 
@@ -3619,6 +3626,9 @@ void main() {
   testWidgets(
     'StyledDivBlockMd preserves all content in full Taiwan economy message',
     (tester) async {
+      // Linux override: native fallback path in tests (no WebView platform).
+      debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       // This is the full user message from Plan.md §1.
       // _convertInlineHtmlFormatting converts <h4>/<ul>/<li>/<b> to markdown,
       // but <div> tags are preserved for StyledDivBlockMd.
