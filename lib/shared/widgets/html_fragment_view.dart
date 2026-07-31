@@ -148,7 +148,6 @@ class _HtmlFragmentViewState extends State<HtmlFragmentView> {
 
   @override
   void dispose() {
-    _controller?.dispose();
     super.dispose();
   }
 
