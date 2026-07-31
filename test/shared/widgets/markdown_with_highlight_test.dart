@@ -3533,4 +3533,155 @@ void main() {
       expect(darkColors, isNot(lightColors));
     },
   );
+
+  // --- StyledDivBlockMd multi-column & direction border tests (v3) ---
+
+  const _gridBlock = '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; font-family: sans-serif; color: #333;">'
+      '<div style="border-top: 3px solid #2c3e50; padding: 10px; background: #f8f9fa; border-radius: 4px;">'
+      '<h4 style="margin: 0 0 8px; font-size: 14px; color: #2c3e50;">核心优势</h4>'
+      '<p style="margin: 0; font-size: 13px; line-height: 1.5;">技术壁垒</p>'
+      '</div>'
+      '<div style="border-top: 3px solid #c0392b; padding: 10px; background: #f8f9fa; border-radius: 4px;">'
+      '<h4 style="margin: 0 0 8px; font-size: 14px; color: #c0392b;">结构性挑战</h4>'
+      '<p style="margin: 0; font-size: 13px; line-height: 1.5;">产业失衡</p>'
+      '</div>'
+      '</div>';
+
+  testWidgets('StyledDivBlockMd renders grid two-column layout', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_markdownHarness(_gridBlock, width: 800));
+    await tester.pump();
+
+    // The outer Container wraps a Column of Rows; each Row has Expanded children.
+    final rows = find.byType(Row);
+    expect(rows, findsWidgets);
+
+    // Two child divs should be in the same Row
+    final rowFinder = rows.first;
+    expect(rowFinder, findsOneWidget);
+
+    // Each child should be an Expanded wrapping a Container with border
+    final containers = find.descendant(
+      of: rowFinder,
+      matching: find.byType(Container),
+    );
+    expect(containers, findsAtLeast(2));
+
+    // Verify at least one Container has a border with a top BorderSide
+    var foundTopBorder = false;
+    for (final element in containers.evaluate()) {
+      final widget = element.widget as Container;
+      final decoration = widget.decoration;
+      if (decoration is BoxDecoration && decoration.border != null) {
+        final border = decoration.border!;
+        if (border.top != BorderSide.none) {
+          foundTopBorder = true;
+          break;
+        }
+      }
+    }
+    expect(foundTopBorder, isTrue);
+  });
+
+  const _flexBlockNarrow = '<div style="display: flex; flex-wrap: wrap; gap: 10px; font-family: sans-serif; color: #333; margin: 10px 0;">'
+      '<div style="flex: 1; min-width: 200px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; background: #f9f9f9;">'
+      '<h4>科技与半导体产业</h4>'
+      '<p>核心引擎</p>'
+      '</div>'
+      '<div style="flex: 1; min-width: 200px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; background: #f9f9f9;">'
+      '<h4>传统制造业</h4>'
+      '<p>隐形冠军</p>'
+      '</div>'
+      '<div style="flex: 1; min-width: 200px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; background: #f9f9f9;">'
+      '<h4>服务业</h4>'
+      '<p>内需型</p>'
+      '</div>'
+      '</div>';
+
+  testWidgets('StyledDivBlockMd renders flex three-card layout narrow', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_markdownHarness(_flexBlockNarrow, width: 360));
+    await tester.pump();
+
+    // All three cards should render — text content present
+    expect(find.textContaining('科技与半导体产业'), findsOneWidget);
+    expect(find.textContaining('传统制造业'), findsOneWidget);
+    expect(find.textContaining('服务业'), findsOneWidget);
+
+    // At 360px, flex-wrap with min-width=200 should stack to 1 column
+    // (floor((360+10)/(200+10)) = 1). All three Expanded widgets exist.
+    final expandedWidgets = find.byType(Expanded);
+    expect(expandedWidgets, findsAtLeast(3));
+  });
+
+  testWidgets(
+    'StyledDivBlockMd preserves all content in full Taiwan economy message',
+    (tester) async {
+      // This is the full user message from Plan.md §1.
+      // _convertInlineHtmlFormatting converts <h4>/<ul>/<li>/<b> to markdown,
+      // but <div> tags are preserved for StyledDivBlockMd.
+      const fullMessage = '了解台湾的经济状况，可以从其整体规模、产业结构、贸易特征以及面临的结构性挑战来切入。'
+          '台湾是典型的海岛型外向经济，体量虽不大，但在全球科技供应链中占据着不可替代的地位。\n\n'
+          '## 整体概况\n\n'
+          '台湾经济总量（GDP）在2023年约为7900亿美元，人均GDP突破3.3万美元。\n\n'
+          '## 核心产业结构\n\n'
+          '<div style="display: flex; flex-wrap: wrap; gap: 10px; font-family: sans-serif; color: #333; margin: 10px 0;">'
+          '<div style="flex: 1; min-width: 200px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; background: #f9f9f9;">'
+          '<h4 style="margin: 0 0 8px; font-size: 14px; color: #555;">科技与半导体产业</h4>'
+          '<p style="margin: 0; font-size: 13px; line-height: 1.5;">经济的绝对核心引擎。</p>'
+          '</div>'
+          '<div style="flex: 1; min-width: 200px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; background: #f9f9f9;">'
+          '<h4 style="margin: 0 0 8px; font-size: 14px; color: #555;">传统制造业</h4>'
+          '<p style="margin: 0; font-size: 13px; line-height: 1.5;">涵盖机械工具、石化等。</p>'
+          '</div>'
+          '<div style="flex: 1; min-width: 200px; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; background: #f9f9f9;">'
+          '<h4 style="margin: 0 0 8px; font-size: 14px; color: #555;">服务业</h4>'
+          '<p style="margin: 0; font-size: 13px; line-height: 1.5;">以批发零售、金融保险为主。</p>'
+          '</div>'
+          '</div>\n\n'
+          '## 对外贸易与地缘经济\n\n'
+          '- **新南向政策**：台湾试图通过政策引导投资和贸易向东南亚转移。\n\n'
+          '## 经济优势与挑战\n\n'
+          '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; font-family: sans-serif; color: #333;">'
+          '<div style="border-top: 3px solid #2c3e50; padding: 10px; background: #f8f9fa; border-radius: 4px;">'
+          '<h4 style="margin: 0 0 8px; font-size: 14px; color: #2c3e50;">核心优势</h4>'
+          '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6;">'
+          '<li><b>技术壁垒：</b>半导体先进制程在全球处于垄断地位。</li>'
+          '</ul>'
+          '</div>'
+          '<div style="border-top: 3px solid #c0392b; padding: 10px; background: #f8f9fa; border-radius: 4px;">'
+          '<h4 style="margin: 0 0 8px; font-size: 14px; color: #c0392b;">结构性挑战</h4>'
+          '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6;">'
+          '<li><b>产业失衡：</b>经济过度依赖半导体。</li>'
+          '</ul>'
+          '</div>'
+          '</div>\n\n'
+          '总体而言，台湾的经济状况是"单引擎起飞"的模式。';
+
+      await tester.pumpWidget(_markdownHarness(fullMessage, width: 800));
+      await tester.pump();
+
+      // Collect all rendered text
+      final richTexts = tester.widgetList<RichText>(find.byType(RichText));
+      final allText = richTexts.map((w) => w.text.toPlainText()).join('\n');
+
+      // Key Chinese phrases must be present
+      expect(allText, contains('科技与半导体产业'));
+      expect(allText, contains('对外贸易与地缘经济'));
+      expect(allText, contains('新南向政策'));
+      expect(allText, contains('经济优势与挑战'));
+      expect(allText, contains('核心优势'));
+      expect(allText, contains('结构性挑战'));
+      expect(allText, contains('单引擎起飞'));
+
+      // No raw HTML tags should leak through
+      expect(allText, isNot(contains('<div')));
+      expect(allText, isNot(contains('</div>')));
+      expect(allText, isNot(contains('<h4')));
+      expect(allText, isNot(contains('<ul')));
+      expect(allText, isNot(contains('<li')));
+    },
+  );
 }

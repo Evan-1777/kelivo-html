@@ -181,6 +181,7 @@ Kelivo-html/
 - `permission_handler_windows` 通过 `dependency_overrides` 使用本地 fork——原因：上游 Windows 持续位置访问有已知 bug
 - `assets/mermaid.min.js` 用于 Markdown 渲染中的 Mermaid 图——原因：WebView 内执行 JS 渲染
 - CI workflow 的 `FLUTTER_VERSION` 须 >= pubspec 的 `flutter` 下限（当前 `>=3.44.1` / Dart `^3.12.1`）——原因：低于下限会导致 `flutter pub get` 版本解析失败；`build-stable*.yml`、`build-linux-arm64.yml` 已统一至 3.44.8
+- `lib/shared/widgets/markdown_with_highlight.dart` 中 `StyledDivBlockMd`（v3 07-31）自研渲染 `<div style>` 块——支持 grid/flex 多列布局（Row+Expanded 分行 / LayoutBuilder 自适应）与方向边框（border-top/right/bottom）；不引入 WebView、不动 gpt_markdown 包
 
 ## 7. 外部依赖与集成（可选）
 
@@ -196,6 +197,7 @@ Kelivo-html/
 - 2025-01（推定）选择 Drift（SQLite）而非仅用 Hive——理由：需要关系查询与迁移支持；Hive 保留用于 KV 存储场景
 - 2025-01（推定）使用 Provider 而非 Riverpod/Bloc——理由：复杂度适中，项目初期选型延续
 - 2025-01（推定）本地 fork 关键依赖（mcp_client、flutter_tts、tray_manager）——理由：上游不满足定制需求，或不稳定
+- 2026-07-31 `StyledDivBlockMd` v3 多列布局 + 方向边框——理由：聊天 HTML 卡片渲染逼近 Markdown 预览；纯 Flutter 原语（Row/Expanded/LayoutBuilder），不引入 WebView 或 CSS Grid 引擎（YAGNI）
 
 ## 9. 术语表（可选）
 

@@ -5880,8 +5880,19 @@ class _DetailsHtmlBlockState extends State<_DetailsHtmlBlock> {
   }
 }
 
+/// Segment produced by splitting a div body into top-level child divs
+/// and interstitial non-div text (gaps).
+class _DivSegment {
+  final bool isDiv;
+  final String text;
+  const _DivSegment({required this.isDiv, required this.text});
+}
+
 /// Renders <div style="..."> blocks as styled Flutter containers.
 /// Only matches complete blocks (with closing </div>) for streaming safety.
+///
+/// v3 (07-31): direction borders (border-top/right/bottom), grid/flex
+/// multi-column layout, balanced child-div splitting.
 class StyledDivBlockMd extends BlockMd {
   @override
   RegExp get exp => RegExp(
@@ -5961,6 +5972,167 @@ class StyledDivBlockMd extends BlockMd {
     return null;
   }
 
+  // Extract color from a shorthand border value like "3px solid #333"
+  static String? _extractBorderColor(String? value) {
+    if (value == null) return null;
+    final parts = value.trim().split(RegExp(r'\s+'));
+    for (final part in parts) {
+      if (part.startsWith('#') || part.startsWith('rgb')) return part;
+    }
+    return null;
+  }
+
+  // Extract width from a shorthand border value like "3px solid #333"
+  static String? _extractBorderWidth(String? value) {
+    if (value == null) return null;
+    final parts = value.trim().split(RegExp(r'\s+'));
+    for (final part in parts) {
+      if (part.endsWith('px')) return part;
+    }
+    return null;
+  }
+
+  // Resolve a single-direction BorderSide from CSS (TASK-001).
+  // Prefers explicit border-{dir}-color/width; falls back to shorthand.
+  static BorderSide? _directionalBorderSide(
+    Map<String, String> css,
+    String dir,
+  ) {
+    final color = _parseColor(css['border-$dir-color']) ??
+        _parseColor(_extractBorderColor(css['border-$dir']));
+    final width = _parsePx(css['border-$dir-width']) ??
+        _parsePx(_extractBorderWidth(css['border-$dir']));
+    if (color != null && width != null) {
+      return BorderSide(color: color, width: width);
+    }
+    return null;
+  }
+
+  // Split a div body into top-level child <div> segments and interstitial
+  // non-div gap text (TASK-003). Uses the same balanced pattern as exp.
+  static List<_DivSegment> _splitTopLevelDivs(String body) {
+    final segments = <_DivSegment>[];
+    final re = RegExp(_divPattern(3), dotAll: true);
+    var last = 0;
+    for (final m in re.allMatches(body)) {
+      if (m.start > last) {
+        segments.add(_DivSegment(
+          isDiv: false,
+          text: body.substring(last, m.start),
+        ));
+      }
+      segments.add(_DivSegment(isDiv: true, text: m.group(0)!));
+      last = m.end;
+    }
+    if (last < body.length) {
+      segments.add(_DivSegment(isDiv: false, text: body.substring(last)));
+    }
+    return segments;
+  }
+
+  // Render a single <div style="..."> block as a Flutter Container (TASK-004).
+  // Extracted from build() so multi-column paths can reuse it for child divs.
+  static Widget _buildDivContainer(
+    BuildContext context,
+    String divText,
+    GptMarkdownConfig config,
+  ) {
+    final match = RegExp(
+      r'^<div\s+style\s*=\s*"([^"]*)"\s*>([\s\S]*)<\/div\s*>$',
+      caseSensitive: false,
+      dotAll: true,
+    ).firstMatch(divText.trim());
+
+    if (match == null) {
+      return config.getRich(TextSpan(text: divText, style: config.style));
+    }
+
+    final styleStr = match.group(1) ?? '';
+    final body = (match.group(2) ?? '').trim();
+    if (body.isEmpty) return const SizedBox.shrink();
+
+    final css = _parseStyle(styleStr);
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Parse background / padding / margin / font / text-color
+    final bgColor = _parseColor(css['background-color']) ??
+        _parseColor(css['background']);
+    final padding = _parsePx(css['padding']);
+    final marginTop = _parsePx(css['margin-top']) ?? _parsePx(css['margin']);
+    final marginBottom =
+        _parsePx(css['margin-bottom']) ?? _parsePx(css['margin']);
+    final fontSz = _parsePx(css['font-size']);
+    final textColor = _parseColor(css['color']);
+    final lineH = double.tryParse(css['line-height'] ?? '');
+    final radius = _parsePx(css['border-radius']);
+
+    // Directional borders (TASK-001): prefer border-{dir}, fallback to
+    // border shorthand.
+    final borderTop = _directionalBorderSide(css, 'top');
+    final borderRight = _directionalBorderSide(css, 'right');
+    final borderBottom = _directionalBorderSide(css, 'bottom');
+    final borderLeft = _directionalBorderSide(css, 'left');
+
+    // border shorthand fallback for sides without direction override
+    final borderW = _parsePx(css['border-width']) ??
+        _parsePx(_extractBorderWidth(css['border']));
+    final borderC = _parseColor(css['border-color']) ??
+        _parseColor(_extractBorderColor(css['border']));
+    final fallbackSide = (borderW != null && borderC != null)
+        ? BorderSide(color: borderC, width: borderW)
+        : BorderSide.none;
+
+    final hasVisual = bgColor != null ||
+        borderTop != null ||
+        borderRight != null ||
+        borderBottom != null ||
+        borderLeft != null ||
+        (borderW != null && borderC != null);
+
+    // Build the border with per-direction overrides
+    final decoration = BoxDecoration(
+      border: Border(
+        top: borderTop ?? fallbackSide,
+        right: borderRight ?? fallbackSide,
+        bottom: borderBottom ?? fallbackSide,
+        left: borderLeft ?? fallbackSide,
+      ),
+      color: hasVisual
+          ? (bgColor ??
+              (isDark
+                  ? cs.onSurface.withValues(alpha: 0.04)
+                  : cs.onSurface.withValues(alpha: 0.02)))
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(radius ?? 8),
+    );
+
+    final bodyStyle = (config.style ?? TextStyle()).copyWith(
+      color: textColor,
+      fontSize: fontSz,
+      height: lineH,
+    );
+    final bodyConfig = config.copyWith(style: bodyStyle);
+
+    final content = config.getRich(
+      TextSpan(
+        style: bodyStyle,
+        children: MarkdownComponent.generate(context, body, bodyConfig, true),
+      ),
+    );
+
+    return Container(
+      width: double.infinity,
+      margin: EdgeInsets.only(
+        top: marginTop ?? 4.0,
+        bottom: marginBottom ?? 4.0,
+      ),
+      padding: EdgeInsets.all(padding ?? 12.0),
+      decoration: decoration,
+      child: content,
+    );
+  }
+
   @override
   Widget build(BuildContext context, String text, GptMarkdownConfig config) {
     final match = RegExp(
@@ -5978,106 +6150,179 @@ class StyledDivBlockMd extends BlockMd {
     if (body.isEmpty) return const SizedBox.shrink();
 
     final css = _parseStyle(styleStr);
+    final display = css['display'] ?? '';
+
+    // --- Multi-column path (TASK-005) ---
+    if ((display == 'grid' || display == 'flex') && body.contains('<div')) {
+      final segs = _splitTopLevelDivs(body);
+      final childDivs = segs.where((s) => s.isDiv).toList();
+
+      if (childDivs.length >= 2) {
+        // ponytail: flex:N growth ratio and grid span not implemented.
+        // Upgrade path: parse flex value from child style, set Expanded.flex;
+        // parse grid-column from child style, wrap in Expanded with flex=span.
+        return _buildMultiColumn(
+          context,
+          config,
+          css: css,
+          display: display,
+          orderedSegs: segs,
+          childCount: childDivs.length,
+        );
+      }
+    }
+
+    // --- Single-column path (existing behaviour) ---
+    return _buildDivContainer(context, text, config);
+  }
+
+  // Build multi-column grid/flex layout from top-level child divs.
+  static Widget _buildMultiColumn(
+    BuildContext context,
+    GptMarkdownConfig config, {
+    required Map<String, String> css,
+    required String display,
+    required List<_DivSegment> orderedSegs,
+    required int childCount,
+  }) {
     final cs = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    // Parse visual properties from CSS
-    final borderLeftColor =
-        _parseColor(css['border-left-color']) ?? _parseColor(_extractBorderColor(css['border-left']));
-    final borderLeftWidth =
-        _parsePx(_extractBorderWidth(css['border-left'])) ?? _parsePx(css['border-left-width']);
+    // Outer container visual properties
     final bgColor = _parseColor(css['background-color']) ??
         _parseColor(css['background']);
-    final padding = _parsePx(css['padding']);
     final marginTop = _parsePx(css['margin-top']) ?? _parsePx(css['margin']);
     final marginBottom =
         _parsePx(css['margin-bottom']) ?? _parsePx(css['margin']);
-    final fontSz = _parsePx(css['font-size']);
-    final textColor = _parseColor(css['color']);
-    final lineH = double.tryParse(css['line-height'] ?? '');
+    final padding = _parsePx(css['padding']);
+    final outerRadius = _parsePx(css['border-radius']);
+    final gap = _parsePx(css['gap']) ?? 10.0;
+    final hasVisual = bgColor != null;
 
-    // border shorthand / border-width / border-color / border-radius
-    final borderW = _parsePx(css['border-width']) ?? _parsePx(_extractBorderWidth(css['border']));
-    final borderC = _parseColor(css['border-color']) ?? _parseColor(_extractBorderColor(css['border']));
-    final radius = _parsePx(css['border-radius']);
-    final hasVisual = bgColor != null || borderC != null || borderLeftColor != null;
-
-    // Build Flutter Container styling
-    BoxDecoration? decoration;
-    if (borderLeftColor != null && borderLeftWidth != null) {
-      decoration = BoxDecoration(
-        border: Border(
-          left: BorderSide(color: borderLeftColor, width: borderLeftWidth),
-        ),
-      );
-    } else if (borderW != null && borderC != null) {
-      decoration = BoxDecoration(
-        border: Border.all(width: borderW, color: borderC),
+    // Compute columns (TASK-002)
+    if (display == 'grid') {
+      final gtc = css['grid-template-columns'] ?? '';
+      final frCount = 'fr'.allMatches(gtc).length;
+      final cols = frCount > 0
+          ? frCount
+          : gtc.trim().split(RegExp(r'\s+')).length.clamp(1, childCount);
+      return _buildGridLayout(
+        context, config,
+        orderedSegs: orderedSegs, cols: cols, gap: gap,
+        bgColor: bgColor, marginTop: marginTop, marginBottom: marginBottom,
+        padding: padding, outerRadius: outerRadius, hasVisual: hasVisual,
+        cs: cs, isDark: isDark,
       );
     }
 
-    final bodyStyle = (config.style ?? TextStyle()).copyWith(
-      color: textColor,
-      fontSize: fontSz,
-      height: lineH,
-    );
-    final bodyConfig = config.copyWith(style: bodyStyle);
+    // flex
+    final hasWrap = (css['flex-wrap'] ?? '').contains('wrap');
+    if (!hasWrap) {
+      // Single row: all children in one Row
+      return _buildGridLayout(
+        context, config,
+        orderedSegs: orderedSegs, cols: childCount, gap: gap,
+        bgColor: bgColor, marginTop: marginTop, marginBottom: marginBottom,
+        padding: padding, outerRadius: outerRadius, hasVisual: hasVisual,
+        cs: cs, isDark: isDark,
+      );
+    }
 
-    Widget content = config.getRich(
-      TextSpan(
-        style: bodyStyle,
-        children: MarkdownComponent.generate(context, body, bodyConfig, true),
-      ),
+    // flex-wrap: dynamic columns via LayoutBuilder.
+    // ponytail: min-width hardcoded at 200px; upgrade to parse min-width
+    // from child style when CSS varies.
+    const minW = 200.0;
+    final capturedSegs = List<_DivSegment>.from(orderedSegs);
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        final available = constraints.maxWidth;
+        final flexCols = math
+            .max(1, ((available + gap) / (minW + gap)).floor())
+            .clamp(1, childCount);
+        return _buildGridLayout(
+          ctx, config,
+          orderedSegs: capturedSegs, cols: flexCols, gap: gap,
+          bgColor: bgColor, marginTop: marginTop, marginBottom: marginBottom,
+          padding: padding, outerRadius: outerRadius, hasVisual: hasVisual,
+          cs: cs, isDark: isDark,
+        );
+      },
+    );
+  }
+
+  // Build the actual Row/Column grid from ordered child div segments.
+  static Widget _buildGridLayout(
+    BuildContext context,
+    GptMarkdownConfig config, {
+    required List<_DivSegment> orderedSegs,
+    required int cols,
+    required double gap,
+    required Color? bgColor,
+    required double? marginTop,
+    required double? marginBottom,
+    required double? padding,
+    required double? outerRadius,
+    required bool hasVisual,
+    required ColorScheme cs,
+    required bool isDark,
+  }) {
+    // Build widgets for each segment in document order.
+    final widgets = <Widget>[];
+    for (final seg in orderedSegs) {
+      if (seg.isDiv) {
+        widgets.add(Expanded(
+          child: _buildDivContainer(context, seg.text, config),
+        ));
+      } else {
+        // Gap text between divs: render full-width as rich text.
+        widgets.add(SizedBox(
+          width: double.infinity,
+          child: config.getRich(
+            TextSpan(text: seg.text, style: config.style),
+          ),
+        ));
+      }
+    }
+
+    // Partition widgets into rows of [cols] width, with gap spacing.
+    final rowWidgets = <Widget>[];
+    for (var i = 0; i < widgets.length;) {
+      final rowChildren = <Widget>[];
+      for (var j = 0; j < cols && i < widgets.length; j++, i++) {
+        if (rowChildren.isNotEmpty) {
+          rowChildren.add(SizedBox(width: gap));
+        }
+        rowChildren.add(widgets[i]);
+      }
+      rowWidgets.add(Row(children: rowChildren));
+      if (i < widgets.length) {
+        rowWidgets.add(SizedBox(height: gap));
+      }
+    }
+
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: rowWidgets,
     );
 
-    final container = Container(
+    return Container(
       width: double.infinity,
       margin: EdgeInsets.only(
         top: marginTop ?? 4.0,
         bottom: marginBottom ?? 4.0,
       ),
       padding: EdgeInsets.all(padding ?? 12.0),
-      decoration: decoration?.copyWith(
+      decoration: BoxDecoration(
         color: hasVisual
             ? (bgColor ??
                 (isDark
                     ? cs.onSurface.withValues(alpha: 0.04)
                     : cs.onSurface.withValues(alpha: 0.02)))
             : Colors.transparent,
-        borderRadius: BorderRadius.circular(radius ?? 8),
-      ) ?? BoxDecoration(
-        color: hasVisual
-            ? (bgColor ??
-                (isDark
-                    ? cs.onSurface.withValues(alpha: 0.04)
-                    : cs.onSurface.withValues(alpha: 0.02)))
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(radius ?? 8),
+        borderRadius: BorderRadius.circular(outerRadius ?? 8),
       ),
       child: content,
     );
-
-    return container;
-  }
-
-  // Extract color from a shorthand border-left value like "3px solid #333"
-  static String? _extractBorderColor(String? value) {
-    if (value == null) return null;
-    final parts = value.trim().split(RegExp(r'\s+'));
-    for (final part in parts) {
-      if (part.startsWith('#') || part.startsWith('rgb')) return part;
-    }
-    return null;
-  }
-
-  // Extract width from a shorthand border-left value like "3px solid #333"
-  static String? _extractBorderWidth(String? value) {
-    if (value == null) return null;
-    final parts = value.trim().split(RegExp(r'\s+'));
-    for (final part in parts) {
-      if (part.endsWith('px')) return part;
-    }
-    return null;
   }
 }
 
