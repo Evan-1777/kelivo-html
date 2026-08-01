@@ -16,21 +16,33 @@ bool shouldUseWebViewForHtml(TargetPlatform platform) {
   return platform != TargetPlatform.linux && platform != TargetPlatform.fuchsia;
 }
 
+String? _cachedMarkdownItJs;
+
+/// Load the bundled markdown-it minified bundle once and reuse it for every
+/// fragment document (avoid re-reading the asset per card).
+Future<String> _markdownItJsAsset() async =>
+    _cachedMarkdownItJs ??=
+        await rootBundle.loadString('assets/js/markdown-it.min.js');
+
 /// Compose the full HTML document for a fragment (pure, sync — testable).
 ///
 /// [template] is the fragment.html template with `{{...}}` placeholders.
 /// [fragmentHtml] is the raw `<div style="...">...</div>` block, embedded
 /// base64-encoded so Chinese text survives UTF-8 round-trip and the fragment
 /// cannot break out of the script/style context.
+/// [markdownItJs] is the offline markdown-it bundle injected into the
+/// `{{MARKDOWN_IT_JS}}` placeholder (no CDN at runtime).
 String composeFragmentDocument({
   required String template,
   required String fragmentHtml,
+  required String markdownItJs,
   required ColorScheme cs,
   required double fontSize,
   required double lineHeight,
   required Color bubbleBackground,
 }) {
   return template
+      .replaceAll('{{MARKDOWN_IT_JS}}', markdownItJs)
       .replaceAll(
         '{{FRAGMENT_BASE64}}',
         base64Encode(utf8.encode(fragmentHtml)),
@@ -53,9 +65,11 @@ Future<String> buildFragmentDocument({
 }) async {
   final cs = Theme.of(context).colorScheme;
   final template = await rootBundle.loadString('assets/html/fragment.html');
+  final markdownItJs = await _markdownItJsAsset();
   return composeFragmentDocument(
     template: template,
     fragmentHtml: fragmentHtml,
+    markdownItJs: markdownItJs,
     cs: cs,
     fontSize: fontSize,
     lineHeight: lineHeight,

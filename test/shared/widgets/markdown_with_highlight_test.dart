@@ -3694,4 +3694,55 @@ void main() {
       expect(allText, isNot(contains('<li')));
     },
   );
+
+  group('WebView styled-div preprocessing protection (TASK-001/002)', () {
+    // Screenshot-isomorphic card: LLM HTML with inline styles inside a styled div.
+    const card =
+        '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">'
+        '<div style="border-top: 3px solid #2c3e50; padding: 10px; background: #f8f9fa; border-radius: 4px;">'
+        '<h4 style="margin: 0 0 8px; font-size: 14px; color: #2c3e50;">核心优势</h4>'
+        '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6;">'
+        '<li><b>技术壁垒：</b>半导体先进制程在全球处于垄断地位。</li>'
+        '</ul>'
+        '</div>'
+        '</div>';
+
+    test('WebView mode keeps raw styled-div HTML through preprocessing', () {
+      final out = debugPreprocessMarkdownForTesting(
+        card,
+        webViewStyledDivs: true,
+      );
+      // Raw HTML survives for markdown-it in the WebView: no HTML->Markdown
+      // conversion (#### / ** / -) inside the card.
+      expect(out, contains('<h4 style='));
+      expect(out, contains('<ul'));
+      expect(out, contains('<li'));
+      expect(out, contains('<b>'));
+      expect(out, isNot(contains('####')));
+      expect(out, isNot(contains('**')));
+      // Round-trip: the div block itself is intact (mask restored).
+      expect(out, card);
+    });
+
+    test('native fallback mode keeps legacy HTML->Markdown conversion', () {
+      final out = debugPreprocessMarkdownForTesting(
+        card,
+        webViewStyledDivs: false,
+      );
+      expect(out, contains('####'));
+      expect(out, contains('**'));
+      expect(out, contains('- '));
+    });
+
+    test('WebView protection does not affect code fences outside divs', () {
+      const text = '普通段落\n\n```dart\nvar x = 1; // <b>not html</b>\n```\n\n末尾';
+      final out = debugPreprocessMarkdownForTesting(
+        text,
+        webViewStyledDivs: true,
+      );
+      // Code fence content must stay untouched (masked before div masking).
+      expect(out, contains('<b>not html</b>'));
+      expect(out, isNot(contains('**not html**')));
+    });
+  });
 }

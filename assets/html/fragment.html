@@ -42,16 +42,34 @@
     <div id="content"></div>
 
     <script>
+    {{MARKDOWN_IT_JS}}
+    </script>
+
+    <script>
         (function () {
-            // Decode the base64-encoded HTML fragment (UTF-8 safe for Chinese).
+            // Decode the base64-encoded HTML fragment (UTF-8 safe for Chinese),
+            // then render Markdown inside it with the bundled markdown-it.
+            // The outer <div style="..."> wrapper is stripped before rendering
+            // so inner Markdown (####, **, -) is parsed, then re-applied so the
+            // card's CSS (grid/flex/borders) survives. Markdown nested inside
+            // HTML tags (e.g. <p>**x**</p>) is not parsed — markdown-it
+            // html_block limitation, accepted.
             try {
                 var b64 = atob('{{FRAGMENT_BASE64}}');
                 var bytes = new Uint8Array(b64.length);
                 for (var i = 0; i < b64.length; i++) { bytes[i] = b64.charCodeAt(i); }
                 var html = new TextDecoder('utf-8').decode(bytes);
-                document.getElementById('content').innerHTML = html;
+                var md = window.markdownit({ html: true, breaks: true, linkify: true });
+                var trimmed = html.trim();
+                var m = trimmed.match(/^<div\s+style\s*=\s*"([^"]*)"\s*>([\s\S]*)<\/div\s*>$/i);
+                var style = null;
+                var inner = html;
+                if (m) { style = m[1]; inner = m[2]; }
+                var rendered = md.render(inner);
+                document.getElementById('content').innerHTML =
+                    style != null ? '<div style="' + style + '">' + rendered + '</div>' : rendered;
             } catch (e) {
-                document.getElementById('content').textContent = 'Fragment decode error: ' + e.message;
+                document.getElementById('content').textContent = 'Fragment render error: ' + e.message;
             }
 
             // Dual-channel postMessage: webview_flutter (FragmentBridge) and

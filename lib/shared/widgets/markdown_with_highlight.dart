@@ -156,8 +156,12 @@ class _MarkdownWithCodeHighlightState extends State<MarkdownWithCodeHighlight> {
     final sanitizedText = _sanitizeImageLinks(_renderText);
     final imageUrls = _extractImageUrls(sanitizedText);
     String normalize(String source) {
+      // WebView strategy is part of the key: the same source normalizes to raw
+      // styled-div HTML on WebView platforms and to HTML->Markdown-converted
+      // text on the native fallback — the two must never share cache entries.
+      final useWebView = shouldUseWebViewForHtml(defaultTargetPlatform);
       final cacheKey =
-          '${settings.enableMathRendering}:${settings.enableDollarLatex}:${widget.streaming}:$source';
+          '${settings.enableMathRendering}:${settings.enableDollarLatex}:${widget.streaming}:$useWebView:$source';
       final cached = _normalizedBlockCache.get(cacheKey);
       if (cached != null) return cached;
       final value = _preprocessFences(
@@ -165,6 +169,7 @@ class _MarkdownWithCodeHighlightState extends State<MarkdownWithCodeHighlight> {
         enableMath: settings.enableMathRendering,
         enableDollarLatex: settings.enableDollarLatex,
         streaming: widget.streaming,
+        protectStyledDivBlocks: useWebView,
       );
       _normalizedBlockCache.put(cacheKey, value);
       return value;
@@ -907,11 +912,31 @@ String _convertHtmlTablesToMarkdown(String input) {
   });
 }
 
+/// Test hook: run the shared Markdown preprocessing with a fixed WebView
+/// styled-div protection flag (pure function, bypasses platform lookup).
+@visibleForTesting
+String debugPreprocessMarkdownForTesting(
+  String input, {
+  required bool webViewStyledDivs,
+  bool enableMath = false,
+  bool enableDollarLatex = false,
+  bool streaming = false,
+}) {
+  return _preprocessFences(
+    input,
+    enableMath: enableMath,
+    enableDollarLatex: enableDollarLatex,
+    streaming: streaming,
+    protectStyledDivBlocks: webViewStyledDivs,
+  );
+}
+
 String _preprocessFences(
   String input, {
   required bool enableMath,
   required bool enableDollarLatex,
   bool streaming = false,
+  bool protectStyledDivBlocks = false,
 }) {
   // Normalize newlines to simplify regex handling
   var out = input.replaceAll('\r\n', '\n');
@@ -962,6 +987,29 @@ String _preprocessFences(
     codeMap[key] = codeContent;
     return key;
   });
+
+  // STEP 1.5 (WebView only): mask complete <div style="...">...</div> blocks
+  // so _convertInlineHtmlFormatting/_convertHtmlTablesToMarkdown cannot turn
+  // <h4>/<strong>/<ul>/<li> into ####/**/- inside HTML cards. WebView renders
+  // the raw fragment with markdown-it (html_fragment_view.dart), so the HTML
+  // must survive preprocessing verbatim. Reuses StyledDivBlockMd's balanced
+  // depth-3 pattern — no second HTML parser.
+  final Map<String, String> divMap = {};
+  if (protectStyledDivBlocks) {
+    var divCount = 0;
+    out = out.replaceAllMapped(
+      RegExp(
+        StyledDivBlockMd.divBlockPattern,
+        caseSensitive: false,
+        dotAll: true,
+      ),
+      (match) {
+        final key = '__STYLED_DIV_MASK_${divCount++}__';
+        divMap[key] = match.group(0)!;
+        return key;
+      },
+    );
+  }
 
   // STEP 2: PROCESSING (on masked string, code is now protected)
   if (streaming) {
@@ -1094,7 +1142,13 @@ String _preprocessFences(
   // partial tables during streaming are left as-is.
   out = _convertHtmlTablesToMarkdown(out);
 
-  // STEP 3: UNMASKING - Restore code blocks
+  // STEP 3: UNMASKING - Restore styled div blocks first (WebView protection);
+  // inner code masks are restored by the generic unmask right after.
+  out = out.replaceAllMapped(RegExp(r'__STYLED_DIV_MASK_\d+__'), (match) {
+    final key = match.group(0)!;
+    return divMap[key] ?? key;
+  });
+
   // Replace all mask placeholders with their original content
   // NOTE: We do NOT restore _codeDollarMask here because we want LaTeX components
   // to never see dollar signs inside code. The unmask will happen later in highlightBuilder.
@@ -5905,7 +5959,11 @@ class StyledDivBlockMd extends BlockMd {
   );
 
   @override
-  String get expString =>
+  String get expString => divBlockPattern;
+
+  /// Balanced `<div style="...">...</div>` block pattern (depth 3) — shared by
+  /// the block matcher and the WebView preprocessing mask so both stay in sync.
+  static String get divBlockPattern =>
       r'<div\s+style\s*=\s*"[^"]*"\s*>' + _divBody(3) + r'<\/div\s*>';
 
   // Recursively build a balanced div-body pattern up to [depth] nesting levels.

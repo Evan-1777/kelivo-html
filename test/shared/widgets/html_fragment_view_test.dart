@@ -16,6 +16,7 @@ void main() {
       final template = await rootBundle.loadString('assets/html/fragment.html');
       expect(template, isNotEmpty);
       expect(template, contains('{{FRAGMENT_BASE64}}'));
+      expect(template, contains('{{MARKDOWN_IT_JS}}'));
       expect(template, contains('{{BACKGROUND}}'));
       expect(template, contains('{{LINE_HEIGHT}}'));
       expect(template, contains('{{BASE_FONT_SIZE}}'));
@@ -28,6 +29,7 @@ void main() {
         template: template,
         fragmentHtml:
             '<div style="border-top: 3px solid #2c3e50;"><h4>核心优势</h4></div>',
+        markdownItJs: '/* md stub */ window.markdownit = function () {};',
         cs: cs,
         fontSize: 15.7,
         lineHeight: 1.5,
@@ -61,18 +63,21 @@ h6 { color: {{ON_SURFACE_VARIANT}}; }
 a { color: {{PRIMARY}}; }
 font-size: {{BASE_FONT_SIZE}}px; line-height: {{LINE_HEIGHT}};
 </style></head><body>
+<script>{{MARKDOWN_IT_JS}}</script>
 <script>var b64 = atob('{{FRAGMENT_BASE64}}');</script>
 </body></html>''';
 
     const fragment =
         '<div style="border-top: 3px solid #2c3e50;"><h4>核心优势</h4>'
         '<p>半导体先进制程</p></div>';
+    const stubMarkdownItJs = '/* md stub */ window.markdownit = function () {};';
 
     final cs = ThemeData.light().colorScheme;
 
     String build() => composeFragmentDocument(
           template: template,
           fragmentHtml: fragment,
+          markdownItJs: stubMarkdownItJs,
           cs: cs,
           fontSize: 15.7,
           lineHeight: 1.5,
@@ -108,6 +113,89 @@ font-size: {{BASE_FONT_SIZE}}px; line-height: {{LINE_HEIGHT}};
       expect(out, isNot(contains('http://')));
       expect(out, isNot(contains('https://')));
       expect(out, isNot(contains('cdn.jsdelivr.net')));
+    });
+
+    test('injects the markdown-it bundle via {{MARKDOWN_IT_JS}}', () {
+      final out = build();
+      expect(out, isNot(contains('{{MARKDOWN_IT_JS}}')));
+      expect(out, contains(stubMarkdownItJs));
+    });
+  });
+
+  group('markdown-it fragment rendering pipeline (TASK-005)', () {
+    const fragment =
+        '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">'
+        '<div style="border-top: 3px solid #2c3e50; padding: 10px;">'
+        '<h4 style="margin: 0 0 8px; font-size: 14px; color: #2c3e50;">核心优势</h4>'
+        '<ul style="margin: 0; padding-left: 20px;">'
+        '<li><b>技术壁垒：</b>半导体先进制程。</li>'
+        '</ul>'
+        '</div>'
+        '</div>';
+
+    test('template declares no runtime external URLs', () async {
+      final template = await rootBundle.loadString('assets/html/fragment.html');
+      expect(template, isNot(contains('http://')));
+      expect(template, isNot(contains('https://')));
+      expect(template, isNot(contains('esm.sh')));
+      expect(template, isNot(contains('cdn.')));
+    });
+
+    test('bundled markdown-it asset is bundled and injectable', () async {
+      final bundle =
+          await rootBundle.loadString('assets/js/markdown-it.min.js');
+      expect(bundle, isNotEmpty);
+      expect(bundle.length, greaterThan(10000));
+      // UMD global used by the template pipeline.
+      expect(bundle, contains('markdownit'));
+
+      final template = await rootBundle.loadString('assets/html/fragment.html');
+      final cs = ThemeData.light().colorScheme;
+      final out = composeFragmentDocument(
+        template: template,
+        fragmentHtml: fragment,
+        markdownItJs: bundle,
+        cs: cs,
+        fontSize: 15.7,
+        lineHeight: 1.5,
+        bubbleBackground: const Color(0xFFF7F7F7),
+      );
+      expect(out, isNot(contains('{{MARKDOWN_IT_JS}}')));
+      expect(out, contains('markdown-it 14.0.0')); // bundle header survived
+    });
+
+    test('wires strip-outer-div -> md.render -> rewrap pipeline', () async {
+      final template = await rootBundle.loadString('assets/html/fragment.html');
+      final cs = ThemeData.light().colorScheme;
+      final out = composeFragmentDocument(
+        template: template,
+        fragmentHtml: fragment,
+        markdownItJs: 'window.markdownit = function () {};',
+        cs: cs,
+        fontSize: 15.7,
+        lineHeight: 1.5,
+        bubbleBackground: const Color(0xFFF7F7F7),
+      );
+      // markdown-it configured with HTML passthrough + breaks + linkify.
+      expect(
+        out,
+        contains('window.markdownit({ html: true, breaks: true, linkify: true })'),
+      );
+      // Outer div style stripped before rendering, re-applied after.
+      expect(out, contains('md.render(inner)'));
+      expect(out, contains("rendered + '</div>' : rendered"));
+      // Fragment with raw markdown markers reaches the page base64-encoded.
+      final start = out.indexOf("atob('") + 6;
+      final end = out.indexOf("')", start);
+      final decoded = utf8.decode(
+        base64Decode(out.substring(start, end)),
+      );
+      expect(decoded, contains('<h4 style='));
+      // Bridge channels and height reporting survive.
+      expect(out, contains('ResizeObserver'));
+      expect(out, contains('FragmentBridge'));
+      expect(out, contains('chrome.webview'));
+      expect(out, contains('a[href]'));
     });
   });
 

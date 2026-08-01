@@ -106,7 +106,7 @@ Kelivo-html/
 │   ├── secrets/                # 密钥/敏感配置管理
 │   ├── icons/                  # 自定义图标
 │   └── l10n/                   # 本地化（英/中）
-├── assets/                     # 静态资源（图标、HTML渲染模板、mermaid.js）
+├── assets/                     # 静态资源（图标、HTML渲染模板、mermaid.js、markdown-it.min.js）
 ├── dependencies/               # 本地 fork 依赖包
 │   ├── mcp_client/
 │   ├── flutter_tts/
@@ -183,6 +183,7 @@ Kelivo-html/
 - CI workflow 的 `FLUTTER_VERSION` 须 >= pubspec 的 `flutter` 下限（当前 `>=3.44.1` / Dart `^3.12.1`）——原因：低于下限会导致 `flutter pub get` 版本解析失败；`build-stable*.yml`、`build-linux-arm64.yml` 已统一至 3.44.8
 - `lib/shared/widgets/markdown_with_highlight.dart` 中 `StyledDivBlockMd`（v3 07-31）自研渲染 `<div style>` 块——支持 grid/flex 多列布局（Row+Expanded 分行 / LayoutBuilder 自适应）与方向边框（border-top/right/bottom）；v4 起仅作 Linux/Web 平台的 fallback，不动 gpt_markdown 包
 - `lib/shared/widgets/html_fragment_view.dart` + `assets/html/fragment.html`（v4 08-01）——完整 `<div style>` 块改由 WebView 渲染（片段混合方案）：WebView 引擎解析全部 CSS，与 Markdown 预览一致；JS 高度桥（ResizeObserver + FragmentBridge channel 双路）+ 链接点击桥 → `onLinkTap`；模板零外部依赖离线可用；Linux/Web 无 WebView 平台回退原生 `StyledDivBlockMd`；`webview_flutter` 4.x 的 `WebViewController` 不提供 `dispose()`，控制器生命周期由插件管理
+- WebView 片段渲染管线（v5 08-01）——离线 markdown-it（方案 B）：`assets/html/fragment.html` 通过 `{{MARKDOWN_IT_JS}}` 占位符注入打包的 `assets/js/markdown-it.min.js`（~120KB，MIT，`rootBundle.loadString` + `static late` 缓存，无 CDN/网络运行时）；JS 先剥离外层 `<div style>` → `md.render(inner)`（`html: true, breaks: true, linkify: true`）→ 用外层 style 回包 → `innerHTML`；Dart 侧 `_preprocessFences` 在 WebView 平台（`shouldUseWebViewForHtml`）用 STEP 1.5 掩码保护完整 styled-div 片段（复用 `StyledDivBlockMd.divBlockPattern` 平衡匹配，不新增 HTML 解析器），使 `<h4 style>`/`<strong>`/`<ul>`/`<li>` 不被 `_convertInlineHtmlFormatting` 转成 `####`/`**`/`-`；规范化缓存键（`_normalizedBlockCache`）纳入 WebView 策略标志，防 WebView 原始 HTML 与原生 Markdown 版本互串缓存；★ markdown-it `html_block` 已知限制：嵌套在 HTML 标签内的 Markdown（如 `<p>**x**</p>`）不解析——已接受（2026-08-01 决策），当前观测内容为纯 HTML 卡片不受影响；Windows `WebViewWidget` 无平台实现为既有缺口（v4 引入），不在本次范围
 - ★ 新增/修改 WebView HTML 模板（`assets/html/*.html`）后必须同步声明到 `pubspec.yaml` 的 `flutter.assets` 清单——原因：`rootBundle.loadString('assets/html/fragment.html')` 依赖资源包，声明遗漏会导致移动端异步加载异常，WebView 保持初始高度呈空白卡片（2026-07-31 实机回归）；回归测试见 `test/shared/widgets/html_fragment_view_test.dart` 的 `fragment.html bundled asset` 组
 
 ## 7. 外部依赖与集成（可选）
@@ -201,6 +202,7 @@ Kelivo-html/
 - 2025-01（推定）本地 fork 关键依赖（mcp_client、flutter_tts、tray_manager）——理由：上游不满足定制需求，或不稳定
 - 2026-07-31 `StyledDivBlockMd` v3 多列布局 + 方向边框——理由：聊天 HTML 卡片渲染逼近 Markdown 预览；纯 Flutter 原语（Row/Expanded/LayoutBuilder），不引入 WebView 或 CSS Grid 引擎（YAGNI）
 - 2026-08-01 v4 片段混合 WebView——理由：v3 实测仍不达标（grid 竖排错乱、flex 卡片缺失）；完整 `<div style>` 块改由 WebView 引擎渲染（一次投入永久正确），普通文本保留原生（选择/复制/引用零回归）；Linux/Web 回退原生 StyledDivBlockMd
+- 2026-08-01 v5 WebView 片段装入离线 markdown-it（方案 B）——理由：修复截图中卡片内 `####`/`**`/`-` 裸露；markdown-it（MIT，`html:true`）离线 asset 注入（与 mark.html 同源思路），先隔离 Dart 预处理（Phase 1 掩码）保证内联样式保留，再让 markdown-it 解析 div 内纯 Markdown；接受 `html_block` 限制（HTML 标签内 Markdown 不解析）；每卡片 WebView 重复解析 ~100KB JS 为已知性能边界，后续可考虑共享/缓存
 
 ## 9. 术语表（可选）
 
